@@ -33,8 +33,14 @@ The hands layer is made in three steps.
 3. **Detect hits** opens the lab: the waveform shows each hit (orange = kick, amber = snare), the
    pattern grid shows the loop.
    - Adjust *Sensitivity* if quiet ghost notes are missed or noise is picked up.
-   - Tap a grid cell to add or remove a hit; long-press a hit to move it to the next sound (e.g. a
-     snare that was heard as a kick).
+   - Hits keep the timing you played: each one sits on a grid step plus a **beat offset**, so it can
+     land a little early or late, off the grid. The pattern editor has three tools (and Undo):
+     - **Draw**: tap a cell to add or remove a hit; hold a hit to move it to the next sound (e.g. a
+       snare that was heard as a kick).
+     - **Snap**: a quantization brush. Brush over hits to snap them onto the grid, fully (100%) or
+       halfway (50%); *All* snaps every hit.
+     - **Nudge**: tap a hit to see and set its offset (in ms, up to just under half a step either
+       way) with a slider, ±1 ms buttons or by dragging it; *Snap* puts it back on the grid.
    - *Re-record* starts over at step 1; the menu has *Edit loop points* to go back to step 2.
 
 Then **record beatbox** on the Beatbox card: it's recorded in time over the loop, and with *Play
@@ -81,8 +87,9 @@ Live 10.0.6 and later, including 10.1, 11 and 12.
   bright beatbox sounds become open hats. A taught profile switches to nearest-centroid matching.
 - **Loop finding**: the suggested loop is the shortest delay after which your hits recur with the
   same sound (kick on kick, snare on snare), extended to whole bars at a natural tempo.
-- **Timing**: hits are placed by beat and quantized on the fly (grid, strength and swing are in
-  Settings), so you can change the grid later without re-recording.
+- **Timing**: each hit is stored where it lands; its grid step and offset follow from the current
+  grid, so you can change the grid (and swing, in Settings) later without losing your timing.
+  Offsets carry through to every export: MIDI, audio and the Live set.
 
 ## Building
 

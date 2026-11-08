@@ -54,7 +54,7 @@ class ProjectStore(context: Context) {
     }
 
     fun load(id: String): Project? = try {
-        json.decodeFromString(Project.serializer(), File(dir(id), "project.json").readText())
+        json.decodeFromString(Project.serializer(), File(dir(id), "project.json").readText()).migrated()
     } catch (e: Exception) {
         null
     }

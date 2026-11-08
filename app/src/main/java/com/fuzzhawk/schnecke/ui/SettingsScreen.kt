@@ -41,10 +41,8 @@ fun SettingsScreen(state: UiState, vm: MainViewModel) {
                 listOf("1/8" to 2, "1/8T" to 3, "1/16" to 4, "1/16T" to 6, "1/32" to 8),
                 p.stepsPerBeat, { vm.setStepsPerBeat(it) },
             )
-            Hint("Changing the grid re-snaps hits; turn the sensitivity slider or re-record to re-detect with it.")
-            var q by remember(p.quantize) { mutableFloatStateOf(p.quantize) }
-            Text("Quantize ${(q * 100).roundToInt()}%  (0% keeps your exact timing)", style = MaterialTheme.typography.labelLarge)
-            Slider(q, { q = it }, onValueChangeFinished = { vm.setQuantize(q) })
+            Hint("Changing the grid re-assigns each hit to its nearest step; where a hit actually sounds doesn't change.")
+            Hint("Hits keep the timing you played. To put hits on the grid, use the snap brush in the Pattern toolbar on the Loop tab.")
             if (p.stepsPerBeat % 2 == 0) {
                 var sw by remember(p.swingPercent) { mutableFloatStateOf(p.swingPercent) }
                 Text("Swing ${sw.roundToInt()}%  (50% straight, 66% triplet)", style = MaterialTheme.typography.labelLarge)

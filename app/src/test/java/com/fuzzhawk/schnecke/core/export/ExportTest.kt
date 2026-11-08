@@ -69,13 +69,17 @@ class ExportTest {
     }
 
     @Test
-    fun rendererPlaysNotesAtQuantizedFrames() {
+    fun rendererPlaysHitsAtTheirOffsetOrOnTheGridOnceSnapped() {
         val p = project().copy(notes = listOf(Note(1, Voice.KICK, 1.03, 127)))
-        val snap = SnapshotBuilder.build(p, sr, sounds(), emptyMap())
-        val out = OfflineRenderer.render(snap, p.loopFrames(sr))
-        val firstLoud = (0 until out.size / 2).first { abs(out[2 * it]) > 0.01f }
-        val expected = (sr * 0.6).toInt() // beat 1 at 100 bpm, quantized from 1.03
-        assertTrue("kick at $firstLoud, expected ~$expected", abs(firstLoud - expected) < 48)
+        fun firstLoud(project: Project): Int {
+            val out = OfflineRenderer.render(SnapshotBuilder.build(project, sr, sounds(), emptyMap()), project.loopFrames(sr))
+            return (0 until out.size / 2).first { abs(out[2 * it]) > 0.01f }
+        }
+        val offGrid = (sr * 0.6 * 1.03).toInt() // 1.03 beats at 100 bpm: off the grid, as played
+        assertTrue("kick at ${firstLoud(p)}, expected ~$offGrid", abs(firstLoud(p) - offGrid) < 48)
+        val snapped = p.copy(notes = p.notes.map { p.snapped(it) })
+        val onGrid = (sr * 0.6).toInt()
+        assertTrue("snapped kick at ${firstLoud(snapped)}, expected ~$onGrid", abs(firstLoud(snapped) - onGrid) < 48)
     }
 
     @Test
@@ -132,11 +136,11 @@ class ExportTest {
         assertEquals(480, ppq)
         val notes = parseNoteOns(bytes)
         assertEquals(p.notes.size * 2, notes.size)
-        // snare detected at 1.02 beats quantizes to beat 1 = tick 480, on channel 10, note 38
-        assertTrue(notes.contains(Triple(480L, 38, 100)))
+        // the snare at 1.02 beats keeps its offset: tick 490 (beat 1 is 480), channel 10, note 38
+        assertTrue(notes.contains(Triple(490L, 38, 100)))
         assertTrue(notes.all { it.second in setOf(36, 38, 42, 46, 37) })
         // second repeat starts 8 beats later
-        assertTrue(notes.contains(Triple(480L + 8 * 480, 38, 100)))
+        assertTrue(notes.contains(Triple(490L + 8 * 480, 38, 100)))
         assertArrayEquals(byteArrayOf(0x81.toByte(), 0x00), MidiWriter.vlq(128))
     }
 

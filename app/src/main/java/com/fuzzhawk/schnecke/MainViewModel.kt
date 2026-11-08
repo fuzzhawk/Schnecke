@@ -139,6 +139,8 @@ data class UiState(
     val trim: TrimState? = null,
     /** Hits are being detected (shows the snail spiral). */
     val analyzing: Boolean = false,
+    /** Pattern edits that can be undone. */
+    val undoDepth: Int = 0,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -165,6 +167,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** While recording: the layers that should be heard (the one being recorded is left out). */
     private var recordingInclude: Set<Layer>? = null
 
+    /** Earlier versions of the hits, for undo (declared before init, which opens a project). */
+    private val undoStack = ArrayDeque<List<Note>>()
+
     init {
         val settings = store.loadSettings()
         val project = settings.lastProjectId?.let { store.load(it) } ?: store.newProject("Loop 1").also { store.save(it) }
@@ -190,12 +195,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun openProject(p: Project) {
         captureJob?.cancel()
+        undoStack.clear()
         takeAudio.clear(); analyses.clear(); rawLoops.clear(); recordedSamples.clear(); customSamples.clear()
         val handsDone = p.layer(Layer.HANDS).take != null || p.notes.any { it.voice.layer == Layer.HANDS }
         _state.update {
             it.copy(
                 project = p, layerViews = emptyMap(), recordedCandidates = emptyMap(), trim = null,
                 capture = CaptureState(), stage = if (handsDone) HandsStage.LAB else HandsStage.CAPTURE,
+                undoDepth = 0,
             )
         }
         updateSettings { it.copy(lastProjectId = p.id) }
@@ -413,7 +420,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setBeatsPerBar(n: Int) = edit { p -> p.copy(beatsPerBar = n, notes = p.notes.filter { it.beat < p.bars * n }) }
     fun setStepsPerBeat(n: Int) = edit { it.copy(stepsPerBeat = n) }
-    fun setQuantize(q: Float) = edit { it.copy(quantize = q) }
     fun setSwing(s: Float) = edit { it.copy(swingPercent = s) }
 
     fun editLayer(l: Layer, rebuild: Boolean = true, f: (LayerState) -> LayerState) =
@@ -447,27 +453,75 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ step editing
 
+    /** Remembers the hits as they are now, so the next edit can be undone. */
+    fun checkpoint() {
+        undoStack.addLast(project.notes)
+        while (undoStack.size > 40) undoStack.removeFirst()
+        _state.update { it.copy(undoDepth = undoStack.size) }
+    }
+
+    fun undo() {
+        val notes = undoStack.removeLastOrNull() ?: return
+        edit { it.copy(notes = notes) }
+        _state.update { it.copy(undoDepth = undoStack.size) }
+    }
+
     /** Tap on a grid cell: add a hit there, or remove the one that is there. */
-    fun toggleStep(v: Voice, step: Int) = edit { p ->
-        val existing = p.notes.filter { it.voice == v && p.stepOf(it) == step }
-        if (existing.isNotEmpty()) p.copy(notes = p.notes - existing.toSet())
-        else p.copy(
-            notes = p.notes + Note(p.nextNoteId, v, step.toDouble() / p.stepsPerBeat, 100),
-            nextNoteId = p.nextNoteId + 1,
-        )
+    fun toggleStep(v: Voice, step: Int) {
+        checkpoint()
+        edit { p ->
+            val existing = p.notes.filter { it.voice == v && p.stepOf(it) == step }
+            if (existing.isNotEmpty()) p.copy(notes = p.notes - existing.toSet())
+            else p.copy(
+                notes = p.notes + Note(p.nextNoteId, v, step.toDouble() / p.stepsPerBeat, 100),
+                nextNoteId = p.nextNoteId + 1,
+            )
+        }
     }
 
     /** Long-press on a hit: it was misheard, move it to the next voice of its layer. */
-    fun cycleVoiceAt(v: Voice, step: Int) = edit { p ->
-        val voices = Voice.of(v.layer)
-        val next = voices[(voices.indexOf(v) + 1) % voices.size]
-        val moved = p.notes.map { if (it.voice == v && p.stepOf(it) == step) it.copy(voice = next) else it }
-        // Avoid two hits of the same voice on one step.
-        val dedup = moved.groupBy { it.voice to p.stepOf(it) }.values.map { g -> g.maxBy { it.velocity } }
-        p.copy(notes = dedup)
+    fun cycleVoiceAt(v: Voice, step: Int) {
+        checkpoint()
+        edit { p ->
+            val voices = Voice.of(v.layer)
+            val next = voices[(voices.indexOf(v) + 1) % voices.size]
+            val moved = p.notes.map { if (it.voice == v && p.stepOf(it) == step) it.copy(voice = next) else it }
+            // Avoid two hits of the same voice on one step.
+            val dedup = moved.groupBy { it.voice to p.stepOf(it) }.values.map { g -> g.maxBy { it.velocity } }
+            p.copy(notes = dedup)
+        }
     }
 
-    fun clearNotes(l: Layer) = edit { p -> p.copy(notes = p.notes.filter { it.voice.layer != l }) }
+    /**
+     * The snap brush passing over a cell: the hit there moves [strength] of the way onto the
+     * grid. Call [checkpoint] once when a stroke starts.
+     */
+    fun snapAt(v: Voice, step: Int, strength: Double) {
+        val p = project
+        if (p.notes.none { it.voice == v && p.stepOf(it) == step && abs(p.offsetOf(it)) > 1e-9 }) return
+        edit { cur -> cur.copy(notes = cur.notes.map { if (it.voice == v && cur.stepOf(it) == step) cur.snapped(it, strength) else it }) }
+    }
+
+    fun snapAll(strength: Double) {
+        if (project.notes.all { abs(project.offsetOf(it)) < 1e-9 }) return
+        checkpoint()
+        edit { p -> p.copy(notes = p.notes.map { p.snapped(it, strength) }) }
+    }
+
+    /** Places hit [noteId] [offsetBeats] off its grid step. Call [checkpoint] before a series of these. */
+    fun setOffset(noteId: Long, offsetBeats: Double) = edit { p ->
+        p.copy(notes = p.notes.map { if (it.id == noteId) p.withOffset(it, offsetBeats) else it })
+    }
+
+    fun deleteNote(noteId: Long) {
+        checkpoint()
+        edit { p -> p.copy(notes = p.notes.filter { it.id != noteId }) }
+    }
+
+    fun clearNotes(l: Layer) {
+        checkpoint()
+        edit { p -> p.copy(notes = p.notes.filter { it.voice.layer != l }) }
+    }
 
     // ------------------------------------------------------------------ recording
 
@@ -581,6 +635,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         rebuildRaw(layer)
         if (replaceNotes) {
+            if (project.notes.any { it.voice.layer == layer }) checkpoint()
             edit(rebuild = false) { cur ->
                 var id = cur.nextNoteId
                 val reps = max(1, kotlin.math.ceil(cur.loopBeats / take.loopBeats).toInt())

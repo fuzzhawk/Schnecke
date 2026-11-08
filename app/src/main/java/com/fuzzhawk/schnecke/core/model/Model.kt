@@ -71,8 +71,10 @@ data class VoiceSettings(
 )
 
 /**
- * One drum hit in the loop. [beat] is the detected (unquantized) position in beats from the
- * loop start, in `[0, loopBeats)`; quantization is applied on the fly so it can be changed later.
+ * One drum hit in the loop. [beat] is where it lands, in beats from the loop start, in
+ * `[0, loopBeats)`. Its grid step is the nearest step of the grid; its *offset* is how far it
+ * sits from that step (early is negative). Detected hits keep the timing you played; snapping
+ * a hit sets its offset to zero.
  */
 @Serializable
 data class Note(
@@ -124,8 +126,11 @@ data class Project(
     val beatsPerBar: Int = 4,
     val bars: Int = 2,
     val stepsPerBeat: Int = 4,
-    /** 0 = keep detected timing, 1 = snap fully to the grid. */
-    val quantize: Float = 1f,
+    /**
+     * Legacy global quantize strength (versions before per-hit offsets snapped every hit by this
+     * much at playback). Now always 0: [migrated] bakes an old value into the hits.
+     */
+    val quantize: Float = 0f,
     /** MPC-style swing in percent: 50 = straight, 66 = triplet feel, 75 = dotted. */
     val swingPercent: Float = 50f,
     val notes: List<Note> = emptyList(),
@@ -144,12 +149,33 @@ data class Project(
     fun voice(v: Voice): VoiceSettings = voices[v] ?: defaultVoices().getValue(v)
     fun layer(l: Layer): LayerState = layers[l] ?: defaultLayers().getValue(l)
 
-    /** Position actually played for [note], after quantize strength and swing. */
+    /** Position actually played for [note]: its (swung) grid step plus its offset. */
     fun playedBeat(note: Note): Double =
-        Timing.playedBeat(note.beat, stepsPerBeat, quantize.toDouble(), swingPercent.toDouble(), loopBeats)
+        Timing.playedBeat(note.beat, stepsPerBeat, swingPercent.toDouble(), loopBeats)
 
-    /** Grid step a note falls on (always fully quantized), used by the step editor. */
+    /** Grid step a note belongs to, used by the step editor. */
     fun stepOf(note: Note): Int = Timing.stepIndex(note.beat, stepsPerBeat, totalSteps)
+
+    /** How far [note] sits from its grid step, in beats (negative = early). */
+    fun offsetOf(note: Note): Double = Timing.offset(note.beat, stepsPerBeat)
+
+    /** Length of one grid step in beats. */
+    val stepBeats: Double get() = 1.0 / stepsPerBeat
+
+    /** [note] moved [strength] of the way onto its grid step (1 = exactly on the grid). */
+    fun snapped(note: Note, strength: Double = 1.0): Note =
+        note.copy(beat = Timing.snap(note.beat, stepsPerBeat, strength, loopBeats))
+
+    /** [note] placed [offsetBeats] from its grid step (kept within half a step, so it stays in its cell). */
+    fun withOffset(note: Note, offsetBeats: Double): Note =
+        note.copy(beat = Timing.withOffset(note.beat, offsetBeats, stepsPerBeat, loopBeats))
+
+    /** Brings a project saved by an older version up to date (keeps how it sounded). */
+    fun migrated(): Project {
+        if (quantize <= 0f) return this
+        val q = quantize.toDouble().coerceAtMost(1.0)
+        return copy(notes = notes.map { snapped(it, q) }, quantize = 0f)
+    }
 
     companion object {
         fun defaultVoices(): Map<Voice, VoiceSettings> = mapOf(
@@ -174,16 +200,35 @@ object Timing {
         return ((idx % totalSteps) + totalSteps) % totalSteps
     }
 
-    fun playedBeat(beat: Double, stepsPerBeat: Int, strength: Double, swingPercent: Double, loopBeats: Double): Double {
+    /** Hits can sit up to just under half a step off the grid (further would be the next step). */
+    const val MAX_OFFSET_STEPS = 0.49
+
+    private fun anchor(beat: Double, stepsPerBeat: Int): Long = Math.round(beat * stepsPerBeat)
+
+    fun offset(beat: Double, stepsPerBeat: Int): Double = beat - anchor(beat, stepsPerBeat).toDouble() / stepsPerBeat
+
+    /** The grid position of step [idx], moved by swing. */
+    fun swungGrid(idx: Long, stepsPerBeat: Int, swingPercent: Double): Double {
         val step = 1.0 / stepsPerBeat
-        val idx = Math.round(beat / step)
         var grid = idx * step
         if (stepsPerBeat % 2 == 0 && swingPercent > 50.0 && Math.floorMod(idx, 2L) == 1L) {
             // MPC swing: the second step of each pair moves from 50% to swingPercent% of the pair.
             grid += (swingPercent - 50.0) / 50.0 * step
         }
-        val q = beat + (grid - beat) * strength.coerceIn(0.0, 1.0)
-        return wrap(q, loopBeats)
+        return grid
+    }
+
+    fun playedBeat(beat: Double, stepsPerBeat: Int, swingPercent: Double, loopBeats: Double): Double {
+        val idx = anchor(beat, stepsPerBeat)
+        return wrap(swungGrid(idx, stepsPerBeat, swingPercent) + offset(beat, stepsPerBeat), loopBeats)
+    }
+
+    fun snap(beat: Double, stepsPerBeat: Int, strength: Double, loopBeats: Double): Double =
+        wrap(beat - offset(beat, stepsPerBeat) * strength.coerceIn(0.0, 1.0), loopBeats)
+
+    fun withOffset(beat: Double, offsetBeats: Double, stepsPerBeat: Int, loopBeats: Double): Double {
+        val limit = MAX_OFFSET_STEPS / stepsPerBeat
+        return wrap(anchor(beat, stepsPerBeat).toDouble() / stepsPerBeat + offsetBeats.coerceIn(-limit, limit), loopBeats)
     }
 
     fun wrap(beat: Double, loopBeats: Double): Double {

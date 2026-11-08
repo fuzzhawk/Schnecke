@@ -1,7 +1,14 @@
 package com.fuzzhawk.schnecke
 
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.swipe
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.lifecycle.ViewModelProvider
@@ -105,6 +112,46 @@ class AppSmokeTest {
         assertTrue(vm.state.value.settings.playHandsWhileBeatboxing)
         shot("03_lab")
 
+        // Hits keep the timing they were played with: most sit a little off the grid.
+        fun offsets(v: Voice) = vm.state.value.project.let { p -> p.notes.filter { it.voice == v }.map { p.offsetOf(it) } }
+        assertTrue(offsets(Voice.SNARE).count { abs(it) > 1e-4 } >= 3)
+
+        // Nudge: tap the first kick, then move it 1 ms later with the offset panel.
+        compose.onNodeWithTag("tool-NUDGE").performClick()
+        compose.onNodeWithTag("pattern-grid").performTouchInput { click(Offset(13.dp.toPx(), 17.dp.toPx())) }
+        compose.waitForIdle()
+        compose.onNodeWithText("Delete this hit").assertExists()
+        val kick = vm.state.value.project.let { p -> p.notes.first { it.voice == Voice.KICK && p.stepOf(it) == 0 } }
+        val kickOffset = vm.state.value.project.offsetOf(kick)
+        compose.onNodeWithText("+1 ms").performClick()
+        val oneMs = vm.state.value.project.bpm / 60000.0
+        val moved = vm.state.value.project.let { p -> p.offsetOf(p.notes.first { it.id == kick.id }) }
+        assertEquals(kickOffset + oneMs, moved, 1e-6)
+        compose.waitForIdle()
+        shot("04_nudge")
+
+        // Snap brush: one stroke along the snare row snaps the snares it passes over.
+        compose.onNodeWithTag("tool-SNAP").performClick()
+        compose.waitForIdle()
+        val kicksBefore = offsets(Voice.KICK)
+        compose.onNodeWithTag("pattern-grid").performTouchInput {
+            val y = 34.dp.toPx() * 1.5f
+            swipe(Offset(4f, y), Offset(26.dp.toPx() * 10.5f, y), durationMillis = 400)
+        }
+        compose.waitForIdle()
+        val snaresInStroke = vm.state.value.project.let { p -> p.notes.filter { it.voice == Voice.SNARE && p.stepOf(it) <= 10 } }
+        assertTrue(snaresInStroke.isNotEmpty())
+        assertTrue(snaresInStroke.all { abs(vm.state.value.project.offsetOf(it)) < 1e-9 })
+        assertEquals(kicksBefore, offsets(Voice.KICK))
+        shot("05_snapped_snares")
+
+        // Undo brings the stroke back; "All" snaps everything.
+        compose.onNodeWithContentDescription("Undo").performClick()
+        assertTrue(offsets(Voice.SNARE).count { abs(it) > 1e-4 } >= 3)
+        vm.snapAll(1.0)
+        assertTrue(vm.state.value.project.notes.all { abs(vm.state.value.project.offsetOf(it)) < 1e-9 })
+        compose.onNodeWithTag("tool-DRAW").performClick()
+
         // Beatbox to samples, edit a step, re-classify a hit.
         vm.setLayerMode(Layer.BEATBOX, LayerMode.REPLACE)
         val before = vm.state.value.project.notes.size
@@ -113,24 +160,24 @@ class AppSmokeTest {
         vm.cycleVoiceAt(Voice.PERC, 3)
         assertTrue(vm.state.value.project.notes.any { it.voice == Voice.HIHAT })
         compose.waitForIdle()
-        shot("04_lab_samples")
+        shot("06_lab_samples")
 
         compose.onNodeWithText("Sounds").performClick()
         compose.waitForIdle()
-        shot("05_sounds")
+        shot("07_sounds")
 
         compose.onNodeWithText("Settings").performClick()
         compose.waitForIdle()
-        shot("06_settings")
+        shot("08_settings")
 
         compose.onNodeWithText("Export").performClick()
         compose.waitForIdle()
-        shot("07_export")
+        shot("09_export")
 
         vm.export(ExportKind.ABLETON)
         waitFor("live set exported") { vm.state.value.exportResult != null }
         compose.waitForIdle()
-        screen("08_export_ready")
+        screen("10_export_ready")
         val zip = vm.state.value.exportResult!!.file
         ZipFile(zip).use { z ->
             val names = z.entries().toList().map { it.name }
@@ -154,12 +201,12 @@ class AppSmokeTest {
         compose.onNodeWithText("Loop").performClick()
         vm.startTeach(Layer.HANDS)
         compose.waitForIdle()
-        screen("09_teach")
+        screen("11_teach")
         vm.teachCancel()
 
         vm.openCalibration()
         compose.waitForIdle()
-        screen("10_calibrate")
+        screen("12_calibrate")
         vm.closeCalibration()
 
         // Projects survive a reload.
