@@ -143,6 +143,9 @@ class AudioEngine(private val context: Context) {
         @Volatile var stop = false
         var data = FloatArray(sampleRate * 30)
         var size = 0
+        /** Peak level of every [PEAK_BLOCK] frames captured, for the live waveform. */
+        val peaks = FloatArray(sampleRate * 600 / PEAK_BLOCK)
+        @Volatile var peakCount = 0
         val offsets = ArrayList<Double>()
         var firstReadRendered = -1L
         lateinit var thread: Thread
@@ -159,6 +162,10 @@ class AudioEngine(private val context: Context) {
                 if (size + n > data.size) data = data.copyOf(data.size * 2)
                 System.arraycopy(chunk, 0, data, size, n)
                 size += n
+                var pk = 0f
+                for (i in 0 until n) { val a = kotlin.math.abs(chunk[i]); if (a > pk) pk = a }
+                if (peakCount < peaks.size) { peaks[peakCount] = pk; peakCount++ }
+                capturedFrames = size
                 val now = System.nanoTime()
                 if (now - lastTs > 100_000_000L && outTsFrame >= 0 &&
                     record.getTimestamp(ts, AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS
@@ -175,6 +182,17 @@ class AudioEngine(private val context: Context) {
     }
 
     private var capture: Capture? = null
+
+    /** Frames captured so far by the running recording. */
+    @Volatile var capturedFrames = 0
+        private set
+
+    /** Live waveform: peak levels of the running recording from block [from] on. */
+    fun livePeaks(from: Int): FloatArray {
+        val c = capture ?: return FloatArray(0)
+        val n = c.peakCount
+        return if (from >= n) FloatArray(0) else c.peaks.copyOfRange(from, n)
+    }
 
     @SuppressLint("MissingPermission")
     fun startRecording(): Boolean {
@@ -209,6 +227,7 @@ class AudioEngine(private val context: Context) {
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
             ?.let { rec.preferredDevice = it }
         val c = Capture(rec)
+        capturedFrames = 0
         rec.startRecording()
         c.thread = Thread({ c.loop() }, "schnecke-in").also { it.start() }
         capture = c
@@ -268,6 +287,9 @@ class AudioEngine(private val context: Context) {
     companion object {
         private const val TAG = "AudioEngine"
         const val SAMPLE_RATE = 48000
+
+        /** Frames per point of the live waveform (about 5 ms). */
+        const val PEAK_BLOCK = 256
 
         /** Off in JVM tests, where there is no audio hardware to drive. */
         @Volatile

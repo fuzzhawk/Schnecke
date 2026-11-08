@@ -102,6 +102,26 @@ class ExportTest {
     }
 
     @Test
+    fun loopCanPlayThroughTheCountIn() {
+        // A kick on beat 7 of an 8-beat loop: with a 4-beat count-in it lands 1 beat before the downbeat.
+        val p = project().copy(notes = listOf(Note(1, Voice.KICK, 7.0, 127)))
+        val fpb = p.framesPerBeat(sr).toInt()
+        fun firstLoud(playDuringCountIn: Boolean): Int? {
+            val r = LoopRenderer(sr)
+            r.snapshot = SnapshotBuilder.build(p, sr, sounds(), emptyMap())
+            r.clickGain = 0f
+            r.playLoopDuringCountIn = playDuringCountIn
+            r.start(4)
+            val buf = FloatArray(2 * 4 * fpb)
+            r.render(buf, 4 * fpb)
+            return (0 until 4 * fpb).firstOrNull { abs(buf[2 * it]) > 0.01f }
+        }
+        assertEquals(null, firstLoud(false))
+        val at = firstLoud(true)!!
+        assertTrue("kick at $at", abs(at - 3 * fpb) < 48)
+    }
+
+    @Test
     fun midiFileHasTempoTrackAndDrumNotes() {
         val p = project()
         val bytes = MidiWriter.write(p, repeats = 2)

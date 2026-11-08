@@ -79,7 +79,7 @@ fun SoundsScreen(state: UiState, vm: MainViewModel, host: Host) {
 private fun VoiceCard(v: Voice, state: UiState, vm: MainViewModel, host: Host) {
     val vs = state.project.voice(v)
     val candidates = state.recordedCandidates[v] ?: 0
-    Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(12.dp).clip(CircleShape).background(Palette.voice(v)))

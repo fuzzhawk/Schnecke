@@ -12,6 +12,7 @@ import com.fuzzhawk.schnecke.core.model.Layer
 import com.fuzzhawk.schnecke.core.model.LayerMode
 import com.fuzzhawk.schnecke.core.model.TakeInfo
 import com.fuzzhawk.schnecke.core.model.Voice
+import com.fuzzhawk.schnecke.ui.showIntroOnLaunch
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
 import kotlinx.coroutines.launch
@@ -24,6 +25,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import java.util.zip.ZipFile
+import kotlin.math.abs
 
 /**
  * Drives the real app on the JVM: feeds it synthetic recordings through the same path a
@@ -36,6 +38,7 @@ import java.util.zip.ZipFile
 class AppSmokeTest {
     init {
         AudioEngine.hardwareEnabled = false
+        showIntroOnLaunch = false
     }
 
     @get:Rule
@@ -52,25 +55,55 @@ class AppSmokeTest {
 
     @Test
     fun recordEditAndExportEverything() {
-        compose.onNodeWithText("Hands").assertExists()
-        shot("01_loop_empty")
+        compose.onNodeWithText("Set loop").assertExists()
+        assertEquals(HandsStage.CAPTURE, vm.state.value.stage)
+        shot("01_record")
 
+        // Step 1 -> 2: a free recording, a two-bar groove played twice at 100 bpm, no metronome.
         val sr = AudioEngine.SAMPLE_RATE
-        val bpm = vm.state.value.project.bpm
-        val (hands, planted) = SyntheticTakes.handsGroove(bpm, loopStart = sr)
-        val (beatbox, plantedBb) = SyntheticTakes.beatboxGroove(bpm, loopStart = sr)
+        val bpm = 100.0
+        val (hands, planted) = SyntheticTakes.handsGroove(bpm, loopStart = (0.8 * sr).toInt(), repeats = 2)
+        vm.viewModelScope.launch { vm.useCapture(hands) }
+        waitFor("set-loop step") { vm.state.value.stage == HandsStage.TRIM && vm.state.value.trim != null }
+        val trim = vm.state.value.trim!!
+        assertEquals(2, trim.bars)
+        assertEquals(bpm, trim.bpm(sr), 1.5)
+        assertTrue(abs(trim.inFrame - planted.first().sample) < sr / 200)
+        compose.waitForIdle()
+        shot("02_set_loop")
+
+        // Step 2 -> 3: detect hits in the marked loop.
+        vm.detectHits()
+        waitFor("hands analyzed in the lab") { vm.state.value.stage == HandsStage.LAB && vm.state.value.layerViews.containsKey(Layer.HANDS) }
+        compose.waitForIdle()
+        val p = vm.state.value.project
+        assertEquals(bpm, p.bpm, 1.5)
+        assertEquals(2, p.bars)
+        val handsNotes = p.notes.filter { it.voice.layer == Layer.HANDS }
+        assertEquals(10, handsNotes.size)
+        assertEquals(planted.take(10).count { it.voice == Voice.SNARE }, handsNotes.count { it.voice == Voice.SNARE })
+        assertTrue("a snare was cut from the recording", (vm.state.value.recordedCandidates[Voice.SNARE] ?: 0) > 0)
+
+        // Back to set-loop with the current points, and detect again.
+        vm.editLoopPoints()
+        waitFor("editing loop points") { vm.state.value.stage == HandsStage.TRIM && vm.state.value.trim != null }
+        assertEquals(vm.state.value.project.layer(Layer.HANDS).take!!.loopStartFrame, vm.state.value.trim!!.inFrame)
+        vm.nudgeLoopPoint(isIn = false, ms = 5)
+        vm.detectHits()
+        waitFor("lab again") { vm.state.value.stage == HandsStage.LAB && !vm.state.value.analyzing && vm.state.value.layerViews.containsKey(Layer.HANDS) }
+
+        // Beatbox layer over the loop.
+        val (beatbox, plantedBb) = SyntheticTakes.beatboxGroove(vm.state.value.project.bpm, loopStart = sr)
         vm.viewModelScope.launch {
-            vm.applyTake(Layer.HANDS, hands, TakeInfo(sr, hands.size, sr, bpm, 8.0))
-            vm.applyTake(Layer.BEATBOX, beatbox, TakeInfo(sr, beatbox.size, sr, bpm, 8.0))
+            vm.applyTake(Layer.BEATBOX, beatbox, TakeInfo(sr, beatbox.size, sr, vm.state.value.project.bpm, 8.0))
         }
-        waitFor("both takes analyzed") { vm.state.value.layerViews.size == 2 }
+        waitFor("beatbox analyzed") { vm.state.value.layerViews.size == 2 && !vm.state.value.analyzing }
         compose.waitForIdle()
         val notes = vm.state.value.project.notes
-        assertEquals(planted.size, notes.count { it.voice.layer == Layer.HANDS })
+        assertEquals(10, notes.count { it.voice.layer == Layer.HANDS })
         assertEquals(plantedBb.size, notes.count { it.voice.layer == Layer.BEATBOX })
-        assertEquals(planted.count { it.voice == Voice.SNARE }, notes.count { it.voice == Voice.SNARE })
-        assertTrue("a snare was cut from the recording", (vm.state.value.recordedCandidates[Voice.SNARE] ?: 0) > 0)
-        shot("02_loop_recorded")
+        assertTrue(vm.state.value.settings.playHandsWhileBeatboxing)
+        shot("03_lab")
 
         // Beatbox to samples, edit a step, re-classify a hit.
         vm.setLayerMode(Layer.BEATBOX, LayerMode.REPLACE)
@@ -80,24 +113,24 @@ class AppSmokeTest {
         vm.cycleVoiceAt(Voice.PERC, 3)
         assertTrue(vm.state.value.project.notes.any { it.voice == Voice.HIHAT })
         compose.waitForIdle()
-        shot("03_loop_replace")
+        shot("04_lab_samples")
 
         compose.onNodeWithText("Sounds").performClick()
         compose.waitForIdle()
-        shot("04_sounds")
+        shot("05_sounds")
 
         compose.onNodeWithText("Settings").performClick()
         compose.waitForIdle()
-        shot("05_settings")
+        shot("06_settings")
 
         compose.onNodeWithText("Export").performClick()
         compose.waitForIdle()
-        shot("06_export")
+        shot("07_export")
 
         vm.export(ExportKind.ABLETON)
         waitFor("live set exported") { vm.state.value.exportResult != null }
         compose.waitForIdle()
-        screen("07_export_ready")
+        screen("08_export_ready")
         val zip = vm.state.value.exportResult!!.file
         ZipFile(zip).use { z ->
             val names = z.entries().toList().map { it.name }
@@ -121,12 +154,12 @@ class AppSmokeTest {
         compose.onNodeWithText("Loop").performClick()
         vm.startTeach(Layer.HANDS)
         compose.waitForIdle()
-        screen("08_teach")
+        screen("09_teach")
         vm.teachCancel()
 
         vm.openCalibration()
         compose.waitForIdle()
-        screen("09_calibrate")
+        screen("10_calibrate")
         vm.closeCalibration()
 
         // Projects survive a reload.
@@ -137,6 +170,7 @@ class AppSmokeTest {
         assertTrue(vm.state.value.project.notes.isEmpty())
         vm.open(id)
         waitFor("reopened project analyzed") { vm.state.value.layerViews.size == 2 }
+        assertEquals(HandsStage.LAB, vm.state.value.stage)
         assertEquals(before + 1, vm.state.value.project.notes.size)
     }
 }

@@ -1,5 +1,8 @@
 package com.fuzzhawk.schnecke.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -70,6 +73,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fuzzhawk.schnecke.HandsStage
 import com.fuzzhawk.schnecke.MainViewModel
 import com.fuzzhawk.schnecke.RecordPhase
 import com.fuzzhawk.schnecke.audio.AudioEngine
@@ -95,6 +99,7 @@ fun SchneckeApp(vm: MainViewModel, host: Host) {
     val state by vm.state.collectAsState()
     var tab by rememberSaveable { mutableStateOf(Tab.LOOP) }
     var showProjects by remember { mutableStateOf(false) }
+    var intro by rememberSaveable { mutableStateOf(showIntroOnLaunch) }
     val snackbar = remember { SnackbarHostState() }
     val position = rememberHeardPosition(vm, active = state.playing || state.record.phase != RecordPhase.IDLE)
 
@@ -111,7 +116,8 @@ fun SchneckeApp(vm: MainViewModel, host: Host) {
         topBar = {
             Column(Modifier.background(Palette.background).padding(top = 8.dp)) {
                 ProjectTitle(state, onClick = { vm.refreshProjects(); showProjects = true })
-                TransportBar(state, vm, position)
+                // While recording or marking the hands loop there is no tempo yet to show.
+                if (tab != Tab.LOOP || state.stage == HandsStage.LAB) TransportBar(state, vm, position)
             }
         },
         bottomBar = {
@@ -144,6 +150,7 @@ fun SchneckeApp(vm: MainViewModel, host: Host) {
                 Tab.EXPORT -> ExportScreen(state, vm)
                 Tab.SETTINGS -> SettingsScreen(state, vm)
             }
+            state.busy?.let { SpiralOverlay(it) }
         }
     }
 
@@ -155,7 +162,11 @@ fun SchneckeApp(vm: MainViewModel, host: Host) {
     state.teach?.let { TeachDialog(it, vm, host) }
     state.calibration?.let { CalibrationDialog(it, vm, host) }
     state.exportResult?.let { ExportReadyDialog(it, vm, host) }
+    AnimatedVisibility(intro, enter = fadeIn(), exit = fadeOut()) { IntroSplash { intro = false } }
 }
+
+/** Turned off in tests, which start straight in the app. */
+var showIntroOnLaunch = true
 
 /** The transport position the listener hears, refreshed every frame. */
 class HeardPosition {

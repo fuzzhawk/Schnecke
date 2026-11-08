@@ -15,6 +15,12 @@ data is not shipped in the app.
 
 Ableton and Ableton Live are trademarks of Ableton AG. This project is not affiliated with Ableton.
 
+## App icon
+
+The launcher icon is the snail emoji from [Noto Emoji](https://github.com/googlefonts/noto-emoji)
+by Google, licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0),
+rendered to PNG (taken from the `@iconify-json/noto` package).
+
 ## Drum sounds
 
 Every built-in drum sound is synthesized in code (`DrumSynth.kt`); no sample recordings are bundled.

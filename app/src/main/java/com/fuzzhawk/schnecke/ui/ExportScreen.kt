@@ -11,7 +11,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -42,7 +41,6 @@ fun ExportScreen(state: UiState, vm: MainViewModel) {
         Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
         if (p.notes.isEmpty() && p.layers.values.all { it.take == null }) {
             Hint("Record something on the Loop tab first.")
         }
@@ -97,7 +95,7 @@ private fun duration(s: Double): String {
 
 @Composable
 private fun ExportCard(title: String, text: String, content: @Composable () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionTitle(title)
             Hint(text)

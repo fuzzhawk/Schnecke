@@ -20,8 +20,8 @@ data class AppSettings(
     val countInBars: Int = 1,
     /** Metronome click while recording (after the count-in). AUTO = only with headphones. */
     val clickWhileRecording: AutoMode = AutoMode.AUTO,
-    /** Hear the other layer while recording. AUTO = only with headphones. */
-    val monitorWhileRecording: AutoMode = AutoMode.AUTO,
+    /** Play the hands loop while the beatbox layer is recorded (best with headphones). */
+    val playHandsWhileBeatboxing: Boolean = true,
     val clickDuringPlayback: Boolean = false,
     val haptics: Boolean = true,
     val clickVolume: Float = 0.7f,

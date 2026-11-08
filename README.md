@@ -20,33 +20,43 @@ older one and keeps your loops.
 
 ## Making a loop
 
-1. **Set the loop**: tap the tempo chip (slider or tap-tempo), choose 1–8 bars and the time signature.
-2. **Record hands**: press *Record* on the Hands card. After a one-bar count-in, tap the loop once
-   through. It's analyzed right away and starts looping.
-   - The hits appear on the waveform (orange = kick, amber = snare) and in the pattern grid.
-   - Adjust *Sensitivity* if quiet ghost notes are missed or noise is picked up; the take is re-analyzed.
-   - If a surface confuses it, use **Teach**: record a few kicks, then a few snares, and it matches
-     against your own examples from then on.
-3. **Record beatbox** on the Beatbox card the same way: "ts" = hi-hat, "tsss" = open hat,
-   "k"/"pf"/clicks = percussion. Choose **Raw audio** to loop your beatbox as recorded (with
-   optional noise gate) or **Samples** to replace it with triggered sounds.
-4. **Fix things in the grid**: tap a cell to add or remove a hit, long-press a hit to move it to the
-   next sound (e.g. a snare that was heard as a kick).
-5. **Sounds tab**: pick each voice's sample. *From your recording* uses a hit cut from your own
-   take (press *Another* to try a different hit). There are synthesized kicks, snares, claps, hats
-   and percussion, or *Import a WAV file…*. Set volume, pan and the MIDI note per voice.
+The hands layer is made in three steps.
+
+1. **Record**: press the big record button and tap your groove freely on any surface, two or more
+   times through. There's no metronome; the waveform scrolls as you play, like a voice recorder.
+   Optionally **Teach** first: record a few kicks, then a few snares, on the surface you'll use, and
+   detection matches your own examples.
+2. **Set loop**: the whole recording is shown with **IN** and **OUT** handles. The app suggests where
+   your groove repeats; drag the handles (they snap to your hits, or nudge them by 5 ms), say how
+   many bars the loop is and in what time signature, and the tempo follows. *Preview* loops the
+   marked part, optionally with a click to check the tempo. The wand finds the loop again.
+3. **Detect hits** opens the lab: the waveform shows each hit (orange = kick, amber = snare), the
+   pattern grid shows the loop.
+   - Adjust *Sensitivity* if quiet ghost notes are missed or noise is picked up.
+   - Tap a grid cell to add or remove a hit; long-press a hit to move it to the next sound (e.g. a
+     snare that was heard as a kick).
+   - *Re-record* starts over at step 1; the menu has *Edit loop points* to go back to step 2.
+
+Then **record beatbox** on the Beatbox card: it's recorded in time over the loop, and with *Play
+hands loop while recording* on (the default) the hands loop plays through the count-in and the
+take. "ts" = hi-hat, "tsss" = open hat, "k"/"pf"/clicks = percussion. Choose **Raw audio** to loop
+your beatbox as recorded (with optional noise gate) or **Samples** to replace it with triggered sounds.
+
+**Sounds tab**: pick each voice's sample. *From your recording* uses a hit cut from your own take
+(press *Another* to try a different hit). There are synthesized kicks, snares, claps, hats and
+percussion, or *Import a WAV file…*. Set volume, pan and the MIDI note per voice.
 
 ### Headphones
 
-With headphones connected, the click and the other layer play while you record (Settings → Auto).
-Without them, the phone's speaker would leak into the microphone, so recording runs with a visual
-and vibrating metronome instead. Turn on *Vibrate on the beat* for a silent click you can feel.
+Wear headphones while recording beatbox over the hands loop: without them the phone's speaker leaks
+the loop into the microphone (the app warns you). The beatbox click plays only with headphones by
+default (Settings), and *Vibrate on the beat* gives a silent click you can feel.
 
 ### Timing
 
-Recordings are aligned with the audio hardware's own timestamps. If your hits still land early or
-late on the grid (Bluetooth headphones add delay), run **Settings → Calibrate…** and tap along with
-eight clicks, or set the offset by hand.
+The hands loop's timing comes from the loop points you mark. Beatbox takes are aligned to the loop
+with the audio hardware's own timestamps; if they still land early or late (Bluetooth headphones add
+delay), run **Settings → Calibrate…** and tap along with eight clicks, or set the offset by hand.
 
 ## Exports
 
@@ -69,6 +79,8 @@ Live 10.0.6 and later, including 10.1, 11 and 12.
 - **Classification**: hits of a take are split into two clusters on standardized features, and the
   darker cluster becomes the kick (or the percussion, for beatbox) wherever you're tapping. Long,
   bright beatbox sounds become open hats. A taught profile switches to nearest-centroid matching.
+- **Loop finding**: the suggested loop is the shortest delay after which your hits recur with the
+  same sound (kick on kick, snare on snare), extended to whole bars at a natural tempo.
 - **Timing**: hits are placed by beat and quantized on the fly (grid, strength and swing are in
   Settings), so you can change the grid later without re-recording.
 
@@ -90,7 +102,7 @@ generated sets against Live 10's schema; see [THIRD_PARTY_NOTICES.md](THIRD_PART
 ```
 app/src/main/java/com/fuzzhawk/schnecke/
   core/        plain Kotlin, unit-tested on the JVM
-    dsp/       onset detection, features, classification, sample cutting, raw loops
+    dsp/       onset detection, features, classification, loop finding, sample cutting, raw loops
     synth/     the synthesized drum kit
     audio/     loop renderer shared by playback and export
     export/    MIDI, WAV, Ableton Live 10 writers

@@ -133,6 +133,10 @@ class LoopRenderer(val sampleRate: Int) {
     @Volatile
     var masterGain: Float = 1f
 
+    /** Play the loop through the count-in too (as if it had already been going), not just clicks. */
+    @Volatile
+    var playLoopDuringCountIn: Boolean = false
+
     private sealed interface Command
     private class Start(val countInBeats: Int) : Command
     private object Stop : Command
@@ -216,8 +220,8 @@ class LoopRenderer(val sampleRate: Int) {
         val snap = snapshot
         if (snap !== lastSnapshot) {
             lastSnapshot = snap
-            if (snap != null && pos >= 0) {
-                val lp = pos % snap.loopFrames
+            if (snap != null && (pos >= 0 || playLoopDuringCountIn)) {
+                val lp = Math.floorMod(pos, snap.loopFrames)
                 nextEvent = firstEventAtOrAfter(snap, lp)
                 lastLoopPos = lp - 1
             }
@@ -241,8 +245,8 @@ class LoopRenderer(val sampleRate: Int) {
                 active.add(ActiveVoice(if (accent) clickHi else clickLo, -2, 0, clickGain, clickGain))
             }
         }
-        if (pos >= 0) {
-            val loopPos = pos % snap.loopFrames
+        if (pos >= 0 || playLoopDuringCountIn) {
+            val loopPos = Math.floorMod(pos, snap.loopFrames)
             if (loopPos < lastLoopPos) nextEvent = 0
             lastLoopPos = loopPos
             val events = snap.events

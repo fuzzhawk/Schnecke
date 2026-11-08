@@ -37,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -59,6 +60,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fuzzhawk.schnecke.HandsStage
 import com.fuzzhawk.schnecke.LayerView
 import com.fuzzhawk.schnecke.MainViewModel
 import com.fuzzhawk.schnecke.RecordPhase
@@ -70,12 +72,25 @@ import com.fuzzhawk.schnecke.core.model.Voice
 
 @Composable
 fun LoopScreen(state: UiState, vm: MainViewModel, host: Host, position: HeardPosition) {
+    Box {
+        when (state.stage) {
+            HandsStage.CAPTURE -> CaptureScreen(state, vm, host)
+            HandsStage.TRIM -> TrimScreen(state, vm, position)
+            HandsStage.LAB -> Lab(state, vm, host, position)
+        }
+        if (state.analyzing) SpiralOverlay(if (state.stage == HandsStage.LAB) "Listening for hits…" else "Reading your recording…")
+    }
+}
+
+/** Step 3: the detection lab. */
+@Composable
+private fun Lab(state: UiState, vm: MainViewModel, host: Host, position: HeardPosition) {
     Column(
         Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // The pattern stays at the top, where it can be seen and edited while the loop plays.
-        Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
+        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("Pattern", Modifier.weight(1f))
@@ -84,7 +99,7 @@ fun LoopScreen(state: UiState, vm: MainViewModel, host: Host, position: HeardPos
                 StepGrid(state, vm, position)
             }
         }
-        LayerCard(Layer.HANDS, "kick & snare", "Tap the beat: fingertip thumps are kicks, fingernail flicks are snares.", state, vm, host)
+        LayerCard(Layer.HANDS, "kick & snare", "No recording: hits are programmed by hand. Record to tap your groove freely and mark its loop.", state, vm, host)
         LayerCard(Layer.BEATBOX, "hats & percussion", "Beatbox over the loop: \"ts\" hats, \"tsss\" open hats, \"k\"/\"pf\" percussion.", state, vm, host)
         Spacer(Modifier.height(8.dp))
     }
@@ -98,17 +113,32 @@ private fun LayerCard(layer: Layer, subtitle: String, help: String, state: UiSta
     val mine = rec.layer == layer && rec.phase != RecordPhase.IDLE
     val otherBusy = rec.phase != RecordPhase.IDLE && !mine
     var menu by remember { mutableStateOf(false) }
-    Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(layer.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Hint(subtitle)
                 }
-                RecordButton(mine, rec.phase, enabled = !otherBusy) { host.withMicPermission { vm.record(layer) } }
+                if (layer == Layer.HANDS) {
+                    // The hands loop is made in the record / set-loop steps.
+                    Button(
+                        onClick = { vm.reRecordHands() },
+                        enabled = rec.phase == RecordPhase.IDLE,
+                        colors = ButtonDefaults.buttonColors(containerColor = Palette.surfaceHigh, contentColor = Palette.text),
+                    ) {
+                        Icon(Icons.Filled.FiberManualRecord, null, Modifier.size(16.dp), tint = Palette.record)
+                        Text(if (ls.take != null) " Re-record" else " Record")
+                    }
+                } else {
+                    RecordButton(mine, rec.phase, enabled = !otherBusy) { host.withMicPermission { vm.record(layer) } }
+                }
                 Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "More") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        if (layer == Layer.HANDS && ls.take != null) {
+                            DropdownMenuItem(text = { Text("Edit loop points") }, onClick = { menu = false; vm.editLoopPoints() })
+                        }
                         DropdownMenuItem(text = { Text("Clear hits") }, onClick = { menu = false; vm.clearNotes(layer) })
                         DropdownMenuItem(text = { Text("Delete recording") }, onClick = { menu = false; vm.clearLayer(layer) })
                         if (ls.profile != null) {
@@ -127,6 +157,15 @@ private fun LayerCard(layer: Layer, subtitle: String, help: String, state: UiSta
                 TextButton(onClick = { host.withMicPermission { vm.startTeach(layer) } }) {
                     Icon(Icons.Filled.School, null, Modifier.size(18.dp))
                     Text(if (ls.profile != null) " Taught ✓" else " Teach")
+                }
+            }
+            if (layer == Layer.BEATBOX) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Play hands loop while recording", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Switch(state.settings.playHandsWhileBeatboxing, { v -> vm.updateSettings { it.copy(playHandsWhileBeatboxing = v) } })
+                }
+                if (state.settings.playHandsWhileBeatboxing && !state.headphones) {
+                    Hint("No headphones connected: the loop will leak from the speaker into the microphone. Plug in headphones, or keep the volume low.")
                 }
             }
             if (view == null) {

@@ -56,15 +56,16 @@ fun SettingsScreen(state: UiState, vm: MainViewModel) {
             LabeledRow("Count-in") {
                 Segmented(listOf("None" to 0, "1 bar" to 1, "2 bars" to 2), s.countInBars, { v -> vm.updateSettings { it.copy(countInBars = v) } })
             }
-            LabeledRow("Click while recording") {
+            Hint("The hands layer is recorded freely, without a metronome. These apply to the beatbox layer, which is recorded over the loop.")
+            LabeledRow("Click while recording beatbox") {
                 Segmented(autoOptions, s.clickWhileRecording, { v -> vm.updateSettings { it.copy(clickWhileRecording = v) } })
             }
-            LabeledRow("Hear other layer") {
-                Segmented(autoOptions, s.monitorWhileRecording, { v -> vm.updateSettings { it.copy(monitorWhileRecording = v) } })
+            SwitchRow("Play hands loop while recording beatbox", s.playHandsWhileBeatboxing) { v ->
+                vm.updateSettings { it.copy(playHandsWhileBeatboxing = v) }
             }
             Hint(
-                "Auto turns these on only when headphones are connected, so the phone's speaker doesn't leak into the " +
-                    "microphone. ${if (state.headphones) "Headphones are connected." else "No headphones connected right now."}",
+                "Auto plays the click only when headphones are connected. Without headphones the phone's speaker " +
+                    "leaks into the microphone. ${if (state.headphones) "Headphones are connected." else "No headphones connected right now."}",
             )
             SwitchRow("Vibrate on the beat", s.haptics) { v -> vm.updateSettings { it.copy(haptics = v) } }
             Hint("A silent metronome you can feel. If the phone lies on the surface you're tapping, the buzz may be picked up.")
@@ -104,7 +105,7 @@ private val autoOptions = listOf("Auto" to AutoMode.AUTO, "On" to AutoMode.ON, "
 
 @Composable
 private fun SettingsCard(title: String, content: @Composable () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
+    Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Palette.surface)) {
         Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             SectionTitle(title)
             content()

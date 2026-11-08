@@ -87,10 +87,11 @@ object SyntheticTakes {
         noiseLevel: Double = 0.002,
         bodyHz: Double = 110.0,
         ringHz: Double = 2600.0,
+        repeats: Int = 1,
     ): Pair<FloatArray, List<Planted>> {
         val rnd = Random(seed)
         val fpb = SR * 60.0 / bpm
-        val total = loopStart + (8 * fpb).toInt() + SR / 2
+        val total = loopStart + (8 * repeats * fpb).toInt() + SR / 2
         val out = noise(rnd, total, noiseLevel)
         val planted = ArrayList<Planted>()
         val pattern = listOf(
@@ -98,10 +99,11 @@ object SyntheticTakes {
             4.0 to Voice.KICK, 4.75 to Voice.KICK, 5.0 to Voice.SNARE, 6.5 to Voice.KICK,
             7.0 to Voice.SNARE, 7.5 to Voice.SNARE,
         )
-        for ((beat, v) in pattern) {
+        for (r in 0 until repeats) for ((b, v) in pattern) {
+            val beat = b + 8 * r
             val jitter = ((rnd.nextDouble() * 2 - 1) * 0.008 * SR).toInt()
             val at = loopStart + (beat * fpb).toInt() + jitter
-            val ghost = beat == 7.5
+            val ghost = b == 7.5
             val gain = if (ghost) 0.12 else 0.4 + rnd.nextDouble() * 0.4
             val sound = if (v == Voice.KICK) thump(rnd, gain, bodyHz) else flick(rnd, gain, ringHz)
             mixInto(out, sound, at)

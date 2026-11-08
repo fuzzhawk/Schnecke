@@ -9,6 +9,8 @@ import com.fuzzhawk.schnecke.core.audio.SnapshotBuilder
 import com.fuzzhawk.schnecke.core.dsp.HitFeatures
 import com.fuzzhawk.schnecke.core.dsp.HitClassifier
 import com.fuzzhawk.schnecke.core.dsp.LatencyCalibrator
+import com.fuzzhawk.schnecke.core.dsp.LoopFinder
+import com.fuzzhawk.schnecke.core.dsp.LoopPoints
 import com.fuzzhawk.schnecke.core.dsp.OnsetDetector
 import com.fuzzhawk.schnecke.core.dsp.RawLoopBuilder
 import com.fuzzhawk.schnecke.core.dsp.SampleCutter
@@ -48,6 +50,40 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 enum class RecordPhase { IDLE, PREPARING, COUNT_IN, RECORDING, ANALYZING }
+
+/** The hands layer is made in three steps: record freely, mark the loop, then the detection lab. */
+enum class HandsStage { CAPTURE, TRIM, LAB }
+
+/** A free (metronome-less) recording in progress. */
+data class CaptureState(
+    val recording: Boolean = false,
+    /** Live waveform: one peak per [AudioEngine.PEAK_BLOCK] frames. */
+    val peaks: FloatArray = FloatArray(0),
+    val seconds: Double = 0.0,
+)
+
+/** Loop points being set on a free recording. */
+data class TrimState(
+    val totalFrames: Int,
+    /** Overview of the whole recording, [TRIM_BUCKETS] peaks. */
+    val peaks: FloatArray,
+    val onsets: IntArray,
+    val inFrame: Int,
+    val outFrame: Int,
+    val bars: Int,
+    val beatsPerBar: Int,
+    val snap: Boolean = true,
+    val previewing: Boolean = false,
+    val click: Boolean = false,
+) {
+    val beats: Int get() = bars * beatsPerBar
+    fun bpm(sampleRate: Int): Double = LoopFinder.bpm(inFrame, outFrame, beats, sampleRate)
+    fun bpmOk(sampleRate: Int): Boolean = bpm(sampleRate) in LoopFinder.MIN_BPM..LoopFinder.MAX_BPM
+
+    companion object {
+        const val TRIM_BUCKETS = 900
+    }
+}
 
 data class RecordState(val layer: Layer? = null, val phase: RecordPhase = RecordPhase.IDLE)
 
@@ -98,6 +134,11 @@ data class UiState(
     val teach: TeachState? = null,
     val calibration: CalibrationState? = null,
     val headphones: Boolean = false,
+    val stage: HandsStage = HandsStage.CAPTURE,
+    val capture: CaptureState = CaptureState(),
+    val trim: TrimState? = null,
+    /** Hits are being detected (shows the snail spiral). */
+    val analyzing: Boolean = false,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -119,6 +160,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private var recordJob: Job? = null
     private var saveJob: Job? = null
+    private var captureJob: Job? = null
 
     /** While recording: the layers that should be heard (the one being recorded is left out). */
     private var recordingInclude: Set<Layer>? = null
@@ -147,8 +189,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------ project lifecycle
 
     private fun openProject(p: Project) {
+        captureJob?.cancel()
         takeAudio.clear(); analyses.clear(); rawLoops.clear(); recordedSamples.clear(); customSamples.clear()
-        _state.update { it.copy(project = p, layerViews = emptyMap(), recordedCandidates = emptyMap()) }
+        val handsDone = p.layer(Layer.HANDS).take != null || p.notes.any { it.voice.layer == Layer.HANDS }
+        _state.update {
+            it.copy(
+                project = p, layerViews = emptyMap(), recordedCandidates = emptyMap(), trim = null,
+                capture = CaptureState(), stage = if (handsDone) HandsStage.LAB else HandsStage.CAPTURE,
+            )
+        }
         updateSettings { it.copy(lastProjectId = p.id) }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
@@ -156,6 +205,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 for (v in Voice.entries) store.loadCustom(p.id, v)?.let { customSamples[v] = it }
             }
             for (l in Layer.entries) if (takeAudio[l] != null) reanalyze(l, replaceNotes = false)
+            // A recording whose loop was never marked: carry on where it was left.
+            if (p.layer(Layer.HANDS).take == null && takeAudio[Layer.HANDS] != null) openTrim(fresh = true)
             rebuildSnapshot()
         }
         rebuildSnapshot()
@@ -314,7 +365,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun togglePlay() = if (engine.renderer.isPlaying || _state.value.playing) stop() else play()
 
     fun play() {
-        if (_state.value.record.phase != RecordPhase.IDLE) return
+        if (_state.value.record.phase != RecordPhase.IDLE || _state.value.capture.recording) return
+        if (_state.value.stage == HandsStage.TRIM && _state.value.trim != null) { togglePreview(); return }
         rebuildSnapshot()
         engine.renderer.clickDuringLoop = settings.clickDuringPlayback
         engine.renderer.start(0)
@@ -323,6 +375,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stop() {
         if (_state.value.record.phase != RecordPhase.IDLE) cancelRecording()
+        if (_state.value.capture.recording) stopCapture()
+        val t = _state.value.trim
+        if (t?.previewing == true) {
+            stopPreview()
+            return
+        }
         engine.renderer.stop()
         _state.update { it.copy(playing = false) }
     }
@@ -378,7 +436,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         Voice.of(l).forEach { recordedSamples.remove(it) }
         viewModelScope.launch(Dispatchers.IO) { store.deleteTake(project.id, l) }
         edit { p -> p.copy(notes = p.notes.filter { it.voice.layer != l }, layers = p.layers + (l to p.layer(l).copy(take = null))) }
-        _state.update { it.copy(layerViews = it.layerViews - l) }
+        _state.update {
+            it.copy(
+                layerViews = it.layerViews - l,
+                stage = if (l == Layer.HANDS) HandsStage.CAPTURE else it.stage,
+                trim = if (l == Layer.HANDS) null else it.trim,
+            )
+        }
     }
 
     // ------------------------------------------------------------------ step editing
@@ -421,9 +485,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val headphones = engine.headphonesConnected()
             _state.update { it.copy(record = RecordState(layer, RecordPhase.PREPARING), playing = true, headphones = headphones) }
             engine.renderer.stop()
-            val monitor = s.monitorWhileRecording.resolve(headphones)
-            recordingInclude = if (monitor) Layer.entries.toSet() - layer else emptySet()
+            // Beatbox over the hands loop: it plays through the count-in and the take.
+            val monitor = layer == Layer.BEATBOX && s.playHandsWhileBeatboxing
+            recordingInclude = if (monitor) setOf(Layer.HANDS) else emptySet()
             rebuildSnapshot()
+            engine.renderer.playLoopDuringCountIn = monitor
             engine.renderer.clickDuringLoop = s.clickWhileRecording.resolve(headphones)
             if (!engine.startRecording()) {
                 message("The microphone isn't available.")
@@ -470,6 +536,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun finishRecording() {
         recordingInclude = null
+        engine.renderer.playLoopDuringCountIn = false
         _state.update { it.copy(record = RecordState()) }
         applyEngineSettings()
         rebuildSnapshot()
@@ -478,6 +545,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun cancelRecording() {
         recordJob?.cancel()
         recordingInclude = null
+        engine.renderer.playLoopDuringCountIn = false
         engine.stopRecording()
         engine.renderer.stop()
         _state.update { it.copy(record = RecordState(), playing = false) }
@@ -489,6 +557,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val audio = takeAudio[layer] ?: return
         val st = project.layer(layer)
         val take = st.take ?: return
+        _state.update { it.copy(analyzing = true) }
+        try {
+            reanalyzeTake(layer, audio, st, take, replaceNotes, usedTimestamps)
+        } finally {
+            _state.update { it.copy(analyzing = false) }
+        }
+    }
+
+    private suspend fun reanalyzeTake(
+        layer: Layer, audio: FloatArray, st: LayerState, take: TakeInfo, replaceNotes: Boolean, usedTimestamps: Boolean,
+    ) {
         val p = project
         val result = withContext(Dispatchers.Default) {
             analyzer.analyze(audio, take, layer, st.sensitivity, st.profile, p.stepsPerBeat, settings.dynamicVelocity)
@@ -554,6 +633,220 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             (take.loopStartFrame + take.loopBeats * fpb - from).toFloat() / span,
             counts, usedTimestamps,
         )
+    }
+
+    // ------------------------------------------------------------------ hands: record freely, mark the loop
+
+    private var trimHits: List<HitFeatures> = emptyList()
+
+    /** Step 1: record without a metronome, like a voice recorder. */
+    fun startCapture() {
+        if (_state.value.capture.recording) return
+        stop()
+        if (!engine.startRecording()) {
+            message("The microphone isn't available.")
+            return
+        }
+        _state.update { it.copy(stage = HandsStage.CAPTURE, trim = null, capture = CaptureState(recording = true)) }
+        captureJob = viewModelScope.launch {
+            var peaks = FloatArray(0)
+            while (true) {
+                delay(40)
+                val fresh = engine.livePeaks(peaks.size)
+                if (fresh.isNotEmpty()) peaks += fresh
+                val seconds = engine.capturedFrames.toDouble() / sr
+                _state.update { it.copy(capture = CaptureState(true, peaks, seconds)) }
+                if (seconds >= MAX_CAPTURE_SECONDS) {
+                    stopCapture()
+                    break
+                }
+            }
+        }
+    }
+
+    fun stopCapture() {
+        if (!_state.value.capture.recording) return
+        captureJob?.cancel()
+        val rec = engine.stopRecording()
+        _state.update { it.copy(capture = it.capture.copy(recording = false)) }
+        val audio = rec?.audio ?: return
+        if (audio.size < sr * 3 / 2) {
+            message("That was very short. Play your groove a couple of times through.")
+            _state.update { it.copy(capture = CaptureState()) }
+            return
+        }
+        viewModelScope.launch { useCapture(audio) }
+    }
+
+    /** A finished free recording of the hands layer: keep it and go on to marking the loop. */
+    internal suspend fun useCapture(audio: FloatArray) {
+        takeAudio[Layer.HANDS] = audio
+        analyses.remove(Layer.HANDS)
+        rawLoops.remove(Layer.HANDS)
+        editLayer(Layer.HANDS, rebuild = false) { it.copy(take = null) }
+        withContext(Dispatchers.IO) { store.saveTake(project.id, Layer.HANDS, audio) }
+        openTrim(fresh = true)
+    }
+
+    /** Go to the lab without recording, to program hits by hand. */
+    fun skipToLab() {
+        stop()
+        _state.update { it.copy(stage = HandsStage.LAB, trim = null) }
+    }
+
+    fun reRecordHands() {
+        stop()
+        _state.update { it.copy(stage = HandsStage.CAPTURE, capture = CaptureState(), trim = null) }
+    }
+
+    /** Back to the lab from the record step, keeping the current hands loop. */
+    fun backToLab() {
+        if (project.layer(Layer.HANDS).take == null) return
+        stop()
+        _state.update { it.copy(stage = HandsStage.LAB, trim = null, capture = CaptureState()) }
+    }
+
+    fun editLoopPoints() {
+        stop()
+        viewModelScope.launch { openTrim(fresh = false) }
+    }
+
+    /** Step 2: show the whole recording with loop points (suggested, or the current ones). */
+    private suspend fun openTrim(fresh: Boolean) {
+        val audio = takeAudio[Layer.HANDS] ?: return
+        val p = project
+        val st = p.layer(Layer.HANDS)
+        _state.update { it.copy(analyzing = true) }
+        val (hits, peaks) = withContext(Dispatchers.Default) {
+            analyzer.detect(audio, st.sensitivity) to overview(audio, TrimState.TRIM_BUCKETS)
+        }
+        trimHits = hits
+        val take = st.take
+        val points = if (!fresh && take != null) {
+            val fpb = take.sampleRate * 60.0 / take.bpm
+            val bars = (take.loopBeats / p.beatsPerBar).roundToInt().coerceAtLeast(1)
+            LoopPoints(take.loopStartFrame, (take.loopStartFrame + take.loopBeats * fpb).roundToInt().coerceAtMost(audio.size), bars, p.beatsPerBar)
+        } else {
+            withContext(Dispatchers.Default) { LoopFinder.suggest(hits, audio.size, sr, p.beatsPerBar) }
+        }
+        _state.update {
+            it.copy(
+                analyzing = false,
+                stage = HandsStage.TRIM,
+                capture = CaptureState(),
+                trim = TrimState(audio.size, peaks, hits.map { h -> h.onset }.toIntArray(), points.inFrame, points.outFrame, points.bars, points.beatsPerBar),
+            )
+        }
+    }
+
+    private fun overview(audio: FloatArray, buckets: Int): FloatArray {
+        val out = FloatArray(buckets)
+        for (b in 0 until buckets) {
+            val s = (b.toLong() * audio.size / buckets).toInt()
+            val e = ((b + 1).toLong() * audio.size / buckets).toInt()
+            var m = 0f
+            for (i in s until e) m = max(m, abs(audio[i]))
+            out[b] = m
+        }
+        val norm = out.maxOrNull()?.takeIf { it > 0f } ?: 1f
+        for (i in out.indices) out[i] /= norm
+        return out
+    }
+
+    private fun editTrim(updatePreview: Boolean = true, f: (TrimState) -> TrimState) {
+        val t = _state.value.trim ?: return
+        val n = f(t)
+        _state.update { it.copy(trim = n) }
+        if (n.previewing && updatePreview) startPreview(n)
+    }
+
+    /**
+     * Moves the loop start or end to [frame]. While [dragging] it follows the finger exactly;
+     * otherwise (tap, end of a drag) it snaps onto a hit within [snapFrames] when snapping is on.
+     */
+    fun setLoopPoint(isIn: Boolean, frame: Int, snapFrames: Int, dragging: Boolean = false) = editTrim(updatePreview = !dragging) { t ->
+        val f = if (t.snap && !dragging) LoopFinder.snap(frame, t.onsets, snapFrames) else frame
+        val minLen = sr / 2
+        if (isIn) t.copy(inFrame = f.coerceIn(0, t.outFrame - minLen))
+        else t.copy(outFrame = f.coerceIn(t.inFrame + minLen, t.totalFrames))
+    }
+
+    fun nudgeLoopPoint(isIn: Boolean, ms: Int) = editTrim { t ->
+        val d = ms * sr / 1000
+        if (isIn) t.copy(inFrame = (t.inFrame + d).coerceIn(0, t.outFrame - sr / 2))
+        else t.copy(outFrame = (t.outFrame + d).coerceIn(t.inFrame + sr / 2, t.totalFrames))
+    }
+
+    fun setTrimBars(bars: Int) = editTrim { it.copy(bars = bars) }
+    fun setTrimBeatsPerBar(n: Int) = editTrim { it.copy(beatsPerBar = n) }
+    fun toggleTrimSnap() = editTrim { it.copy(snap = !it.snap) }
+    fun toggleTrimClick() = editTrim { it.copy(click = !it.click) }
+
+    /** Let the app find the loop again. */
+    fun autoTrim() = editTrim { t ->
+        val s = LoopFinder.suggest(trimHits, t.totalFrames, sr, t.beatsPerBar)
+        t.copy(inFrame = s.inFrame, outFrame = s.outFrame, bars = s.bars)
+    }
+
+    fun togglePreview() {
+        val t = _state.value.trim ?: return
+        if (t.previewing) stopPreview()
+        else {
+            val n = t.copy(previewing = true)
+            _state.update { it.copy(trim = n) }
+            startPreview(n)
+        }
+    }
+
+    /** Loops the marked part of the recording (with an optional click to check the tempo). */
+    private fun startPreview(t: TrimState) {
+        val audio = takeAudio[Layer.HANDS] ?: return
+        if (!t.bpmOk(sr)) return
+        val bpm = t.bpm(sr)
+        val take = TakeInfo(sr, audio.size, t.inFrame, bpm, t.beats.toDouble())
+        val loop = RawLoopBuilder.build(audio, take, trimHits, gate = false, stepsPerBeat = 4)
+        val preview = project.copy(
+            bpm = bpm, bars = t.bars, beatsPerBar = t.beatsPerBar, notes = emptyList(),
+            layers = mapOf(
+                Layer.HANDS to LayerState(LayerMode.RAW, take = take, gateRaw = false),
+                Layer.BEATBOX to LayerState(LayerMode.REPLACE),
+            ),
+        )
+        engine.renderer.snapshot = SnapshotBuilder.build(preview, sr, emptyMap(), mapOf(Layer.HANDS to loop), setOf(Layer.HANDS))
+        engine.renderer.clickDuringLoop = t.click
+        if (!_state.value.playing) {
+            engine.renderer.start(0)
+            _state.update { it.copy(playing = true) }
+        }
+    }
+
+    private fun stopPreview() {
+        val t = _state.value.trim
+        if (t?.previewing == true) _state.update { it.copy(trim = t.copy(previewing = false)) }
+        if (_state.value.playing) {
+            engine.renderer.stop()
+            _state.update { it.copy(playing = false) }
+        }
+        engine.renderer.clickDuringLoop = settings.clickDuringPlayback
+        rebuildSnapshot()
+    }
+
+    /** Step 3: the marked loop sets the tempo; detect its hits and open the lab. */
+    fun detectHits() {
+        val t = _state.value.trim ?: return
+        val audio = takeAudio[Layer.HANDS] ?: return
+        if (!t.bpmOk(sr)) return
+        stopPreview()
+        val bpm = t.bpm(sr)
+        val take = TakeInfo(sr, audio.size, t.inFrame, bpm, t.beats.toDouble())
+        edit(rebuild = false) { p ->
+            p.copy(
+                bpm = bpm, bars = t.bars, beatsPerBar = t.beatsPerBar,
+                notes = p.notes.filter { it.voice.layer != Layer.HANDS && it.beat < t.beats },
+            )
+        }
+        _state.update { it.copy(stage = HandsStage.LAB, trim = null) }
+        viewModelScope.launch { applyTake(Layer.HANDS, audio, take) }
     }
 
     // ------------------------------------------------------------------ teach
@@ -715,4 +1008,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun analysisFor(l: Layer): TakeAnalysis? = analyses[l]
 
     fun loopStepOf(n: Note): Int = Timing.stepIndex(n.beat, project.stepsPerBeat, project.totalSteps)
+
+    companion object {
+        /** A free recording stops by itself after this long. */
+        const val MAX_CAPTURE_SECONDS = 90.0
+    }
 }
