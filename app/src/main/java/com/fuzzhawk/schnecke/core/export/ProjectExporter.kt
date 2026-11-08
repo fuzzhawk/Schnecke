@@ -43,8 +43,9 @@ object ProjectExporter {
         val snap = SnapshotBuilder.build(inputs.project, sr, inputs.sounds, inputs.raws)
         val frames = audioFrames(inputs.project, sr, seconds, wholeLoops)
         val fade = if (fadeOut) min((2.0 * sr).toLong(), frames / 4) else 0L
-        val mix = OfflineRenderer.render(snap, frames, fade)
-        Wav.write16(out, mix, 2, sr)
+        val writer = Wav.Writer16(out, 2, sr, frames)
+        OfflineRenderer.renderTo(snap, frames, fade) { buf, n -> writer.write(buf, n) }
+        writer.finish()
     }
 
     /**

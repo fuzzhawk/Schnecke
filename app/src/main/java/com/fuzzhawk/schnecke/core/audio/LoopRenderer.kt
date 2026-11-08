@@ -326,33 +326,48 @@ class LoopRenderer(val sampleRate: Int) {
     }
 }
 
-/** Renders loops to buffers for export. */
+/** Renders loops for export. */
 object OfflineRenderer {
-    /** [totalFrames] of interleaved stereo, looping from the first beat, optionally fading out. */
-    fun render(snapshot: PlaybackSnapshot, totalFrames: Long, fadeOutFrames: Long = 0): FloatArray {
-        require(totalFrames * 2 < Int.MAX_VALUE) { "export too long" }
+    /**
+     * Streams [totalFrames] of interleaved stereo, looping from the first beat and optionally fading
+     * out, to [sink] in blocks (buffer, frames). Memory use does not grow with the length.
+     */
+    fun renderTo(snapshot: PlaybackSnapshot, totalFrames: Long, fadeOutFrames: Long = 0, sink: (FloatArray, Int) -> Unit) {
         val r = LoopRenderer(snapshot.sampleRate)
         r.snapshot = snapshot
         r.clickDuringLoop = false
         r.start(0)
-        val out = FloatArray((totalFrames * 2).toInt())
-        val block = 1024
+        val block = 4096
         val buf = FloatArray(block * 2)
+        val fade = min(fadeOutFrames, totalFrames)
+        val fadeStart = totalFrames - fade
         var done = 0L
         while (done < totalFrames) {
             val n = min(block.toLong(), totalFrames - done).toInt()
             r.render(buf, n)
-            System.arraycopy(buf, 0, out, (done * 2).toInt(), n * 2)
+            if (fade > 0 && done + n > fadeStart) {
+                for (i in 0 until n) {
+                    val pos = done + i
+                    if (pos >= fadeStart) {
+                        val g = 1f - (pos - fadeStart + 1).toFloat() / fade
+                        buf[2 * i] *= g
+                        buf[2 * i + 1] *= g
+                    }
+                }
+            }
+            sink(buf, n)
             done += n
         }
-        if (fadeOutFrames > 0) {
-            val f = min(fadeOutFrames, totalFrames)
-            for (i in 0 until f) {
-                val idx = (totalFrames - f + i).toInt()
-                val g = 1f - (i + 1).toFloat() / f
-                out[2 * idx] *= g
-                out[2 * idx + 1] *= g
-            }
+    }
+
+    /** [totalFrames] of interleaved stereo in memory (for short renders such as stems). */
+    fun render(snapshot: PlaybackSnapshot, totalFrames: Long, fadeOutFrames: Long = 0): FloatArray {
+        require(totalFrames * 2 < Int.MAX_VALUE) { "export too long" }
+        val out = FloatArray((totalFrames * 2).toInt())
+        var at = 0
+        renderTo(snapshot, totalFrames, fadeOutFrames) { buf, n ->
+            System.arraycopy(buf, 0, out, at, n * 2)
+            at += n * 2
         }
         return out
     }

@@ -24,6 +24,34 @@ object Wav {
         out.write(buf.array(), 0, buf.position())
     }
 
+    /** Streaming 16-bit WAV writer for exports too long to hold in memory. */
+    class Writer16(private val out: OutputStream, private val channels: Int, sampleRate: Int, totalFrames: Long) {
+        private val rnd = Random(0x5c4ec)
+        private val buf = ByteBuffer.allocate(16384).order(ByteOrder.LITTLE_ENDIAN)
+
+        init {
+            val bytes = totalFrames * channels * 2
+            require(bytes < Int.MAX_VALUE.toLong()) { "WAV files are limited to 2 GB" }
+            out.write(header(bytes.toInt(), channels, sampleRate, bitsPerSample = 16, format = 1))
+        }
+
+        fun write(interleaved: FloatArray, frames: Int) {
+            for (i in 0 until frames * channels) {
+                val dither = (rnd.nextFloat() - rnd.nextFloat()) / 32768f
+                val s = ((interleaved[i] + dither).coerceIn(-1f, 1f) * 32767f).roundToInt()
+                buf.putShort(s.toShort())
+                if (!buf.hasRemaining()) flushBuffer()
+            }
+        }
+
+        fun finish() = flushBuffer()
+
+        private fun flushBuffer() {
+            out.write(buf.array(), 0, buf.position())
+            buf.clear()
+        }
+    }
+
     fun encode16(interleaved: FloatArray, channels: Int, sampleRate: Int): ByteArray =
         ByteArrayOutputStream(44 + interleaved.size * 2).also { write16(it, interleaved, channels, sampleRate) }.toByteArray()
 
